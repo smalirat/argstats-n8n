@@ -108,7 +108,7 @@
     {
       "parameters": {
         "operation": "executeQuery",
-        "query": "-- Una sola consulta para todos los partidos terminados del fixture.\n-- Devuelve solo los que faltan o están incompletos: sincronizado =\n-- terminado (90', alargue o penales), con resultado y con detalle de\n-- jugadores cargado.\nSELECT f.id AS \"matchId\"\nFROM unnest(ARRAY[{{ $input.all().map(item => item.json.matchId).join(',') }}]::BIGINT[]) AS f(id)\nWHERE NOT EXISTS (\n    SELECT 1\n    FROM public.partidos p\n    WHERE p.partido_id = f.id\n      AND p.estado IN ('FT', 'AET', 'Pen')\n      AND p.goles_local IS NOT NULL\n      AND p.goles_visitante IS NOT NULL\n      AND (\n          EXISTS (SELECT 1 FROM public.alineaciones a WHERE a.partido_id = p.partido_id)\n          OR EXISTS (SELECT 1 FROM public.stats_jugador_partido s WHERE s.partido_id = p.partido_id)\n      )\n);",
+        "query": "-- Una sola consulta para todos los partidos terminados del fixture.\n-- Devuelve solo los que faltan o están incompletos: sincronizado =\n-- terminado (90', alargue o penales), con resultado y con detalle de\n-- jugadores cargado. \"sinResultado\" marca los que ni siquiera tienen el\n-- resultado en la base: se bajan primero.\nSELECT f.id AS \"matchId\",\n       NOT EXISTS (\n           SELECT 1 FROM public.partidos p\n           WHERE p.partido_id = f.id\n             AND p.estado IN ('FT', 'AET', 'Pen')\n             AND p.goles_local IS NOT NULL\n             AND p.goles_visitante IS NOT NULL\n       ) AS \"sinResultado\"\nFROM unnest(ARRAY[{{ $input.all().map(item => item.json.matchId).join(',') }}]::BIGINT[]) AS f(id)\nWHERE NOT EXISTS (\n    SELECT 1\n    FROM public.partidos p\n    WHERE p.partido_id = f.id\n      AND p.estado IN ('FT', 'AET', 'Pen')\n      AND p.goles_local IS NOT NULL\n      AND p.goles_visitante IS NOT NULL\n      AND (\n          EXISTS (SELECT 1 FROM public.alineaciones a WHERE a.partido_id = p.partido_id)\n          OR EXISTS (SELECT 1 FROM public.stats_jugador_partido s WHERE s.partido_id = p.partido_id)\n      )\n);",
         "options": {}
       },
       "type": "n8n-nodes-base.postgres",
@@ -129,7 +129,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const { maxPerRun } = $('Category Config').first().json;\n\n// Datos del fixture para ordenar y contar por liga\nconst fixture = new Map(\n  $('Only finished games').all().map(item => [String(item.json.matchId), item.json])\n);\n\n// Primero los más recientes: así la actualización semanal no queda\n// detrás del backlog de partidos viejos\nconst pending = $input.all()\n  .map(item => fixture.get(String(item.json.matchId)))\n  .filter(Boolean)\n  .sort((a, b) => String(b.utcTime).localeCompare(String(a.utcTime)));\n\nconst selected = pending.slice(0, maxPerRun);\nconst ids = selected.map(match => String(match.matchId));\n\nreturn [{\n  json: {\n    pendingTotal: pending.length,\n    count: ids.length,\n    matchIds: ids,\n    matchIdsCsv: ids.join(',')\n  }\n}];"
+        "jsCode": "const { maxPerRun } = $('Category Config').first().json;\n\n// Datos del fixture para ordenar y contar por liga\nconst fixture = new Map(\n  $('Only finished games').all().map(item => [String(item.json.matchId), item.json])\n);\n\n// Primero los que no tienen resultado en la base y, dentro de cada grupo, los\n// más recientes. En el ascenso FotMob no publica jugadores: esos partidos\n// quedan siempre \"incompletos\" y, sin este orden, ocupaban el tope de cada\n// corrida y los resultados nuevos quedaban atrás.\nconst sinResultado = new Set(\n  $input.all().filter(item => item.json.sinResultado).map(item => String(item.json.matchId))\n);\n\nconst pending = $input.all()\n  .map(item => fixture.get(String(item.json.matchId)))\n  .filter(Boolean)\n  .sort((a, b) =>\n    (sinResultado.has(String(b.matchId)) - sinResultado.has(String(a.matchId))) ||\n    String(b.utcTime).localeCompare(String(a.utcTime))\n  );\n\nconst selected = pending.slice(0, maxPerRun);\nconst ids = selected.map(match => String(match.matchId));\n\nreturn [{\n  json: {\n    pendingTotal: pending.length,\n    withoutResult: sinResultado.size,\n    count: ids.length,\n    matchIds: ids,\n    matchIdsCsv: ids.join(',')\n  }\n}];"
       },
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
@@ -193,6 +193,29 @@
       ],
       "id": "8b1d4e7f-2c3a-4f5b-a6d8-9e0c1b2a3f47",
       "name": "Sync Summary"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- FotMob reprograma los partidos que todavía no se jugaron (confirma día y\n-- horario pocos días antes). El ETL solo carga los terminados, así que acá se\n-- actualiza la fecha de los pendientes que ya están en la base. Mismo formato\n-- que escribe el ETL (ISO con milisegundos).\nUPDATE public.partidos p\nSET fecha_utc = v.fecha\nFROM unnest(\n    ARRAY[{{ $input.all().filter(i => !i.json.finished && !i.json.cancelled && i.json.utcTime).map(i => i.json.matchId).join(',') }}]::BIGINT[],\n    ARRAY[{{ $input.all().filter(i => !i.json.finished && !i.json.cancelled && i.json.utcTime).map(i => \"'\" + new Date(i.json.utcTime).toISOString() + \"'\").join(',') }}]::TEXT[]\n) AS v(id, fecha)\nWHERE p.partido_id = v.id\n  AND p.estado NOT IN ('FT', 'AET', 'Pen')\n  AND p.fecha_utc IS DISTINCT FROM v.fecha;",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.7,
+      "position": [
+        1040,
+        128
+      ],
+      "id": "7dd49a42-81d6-4c60-9243-3cecef206695",
+      "name": "Update Fixture Dates",
+      "credentials": {
+        "postgres": {
+          "id": "c5W2RGeAogX8NOoB",
+          "name": "Postgres account"
+        }
+      },
+      "executeOnce": true,
+      "onError": "continueRegularOutput"
     }
   ],
   "connections": {
@@ -256,6 +279,11 @@
         [
           {
             "node": "Only finished games",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Update Fixture Dates",
             "type": "main",
             "index": 0
           }

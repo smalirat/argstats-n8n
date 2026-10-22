@@ -234,7 +234,8 @@ def extraer_filas(data: dict[str, Any]) -> dict[str, Any] | None:
             continue
 
         jugador = ev.get("player") or {}
-        j_id = jugador.get("id")
+        # FotMob manda id 0 cuando no sabe quién fue (pasa en el ascenso): queda en NULL
+        j_id = jugador.get("id") or None
         if j_id:
             filas["jugadores"].append((j_id, extraer_nombre(jugador.get("name"))))
 
@@ -253,7 +254,7 @@ def extraer_filas(data: dict[str, Any]) -> dict[str, Any] | None:
         if not t_id:
             continue
 
-        j_id = t.get("playerId")
+        j_id = t.get("playerId") or None
         if j_id:
             filas["jugadores"].append((j_id, t.get("playerName", "Desc")))
 

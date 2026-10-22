@@ -32,7 +32,8 @@ All five workflows share the same flow. The only difference is the *Category Con
 - **Changing IDs.** The source changes a match's ID once its date is confirmed. To avoid duplicates, when a new ID arrives it replaces the unplayed match with the same fixture and edition (within a ±21-day window). A match with a result is never deleted.
 - **Changing formats.** The format of FotMob's JSON changes from time to time. For example, the source went from `"Liga Profesional Clausura"` + round `"13"` to `"Liga Profesional Argentina"` + `"Clausura - Round 13"`. The ETL normalizes everything to the database's historical format, playoffs included (`"Apertura - Quarter-finals"` → edition `… Apertura Playoff`, round `1/4`). Because of this, some scripts may need occasional updates.
 - **Two divisions in one league.** The source groups Primera B Metro and Federal A together. They are split based on which tables each match's teams appear in (462 and 511 matches in 2026, no mixed cases).
-- **Backlog doesn't block new matches.** Each run downloads at most 150 matches, most recent first, so the weekly update never falls behind old pending matches.
+- **Backlog doesn't block new matches.** Each run downloads at most 150 matches: first the ones with no result in the database, then the rest, most recent first. In the lower divisions the source doesn't publish player details, so those matches always look "incomplete"; without this order they took up the whole cap and new results fell behind.
+- **Rescheduled matches.** The source confirms the date and time of unplayed matches a few days before. Each run updates the date of the pending matches already in the database.
 
 ## Structure
 
