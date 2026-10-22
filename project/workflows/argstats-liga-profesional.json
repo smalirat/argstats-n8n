@@ -1,0 +1,340 @@
+{
+  "id": "ILNEmRK7WEHnn5Lk",
+  "name": "ArgStats - Liga Profesional",
+  "active": false,
+  "nodes": [
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        -160
+      ],
+      "id": "36fb50cd-53e1-4867-8bfa-68eceb55f404",
+      "name": "When clicking ‘Execute workflow’"
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "weeks",
+              "triggerAtDay": [
+                2
+              ],
+              "triggerAtHour": 2,
+              "triggerAtMinute": 0
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.4,
+      "position": [
+        0,
+        32
+      ],
+      "id": "d9a4c085-7a68-48d3-a489-9de247cf9864",
+      "name": "Schedule Trigger"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Categoría que sincroniza este workflow (ID de liga de FotMob).\n// Para una temporada nueva, cambiar acá el season.\nconst leagueId = 112;\nconst season = '2026';\n\n// FotMob junta B Metro y Federal A en la misma liga (9213): se separan\n// por las tablas en las que están los equipos de cada partido.\nconst tableFilter = null;\n\n// Tope de partidos a bajar por corrida, para no pedirle demasiado a\n// FotMob de una vez. Lo que quede pendiente sigue en la próxima.\nconst maxPerRun = 150;\n\nreturn [{\n  json: {\n    category: \"Liga Profesional\",\n    leagueId,\n    season,\n    tableFilter,\n    includeTablePrefix: tableFilter ? tableFilter.include : '',\n    excludeTablePrefix: tableFilter ? tableFilter.exclude : '',\n    maxPerRun\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        208,
+        -64
+      ],
+      "id": "1e7b3c9a-4f2d-4a8e-9b6c-3d5f7a1e2c40",
+      "name": "Category Config"
+    },
+    {
+      "parameters": {
+        "command": "=\"%ARGSTATS_INGEST_DIR%\\.venv\\Scripts\\python.exe\" \"%ARGSTATS_INGEST_DIR%\\scripts\\fotmob_sync.py\" fixtures --leagues \"{{ $json.leagueId }}:{{ $json.season }}\""
+      },
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [
+        416,
+        -64
+      ],
+      "id": "bc1527d4-ec7a-4208-ad2c-c935c4036d5f",
+      "name": "Fetch Season Fixtures"
+    },
+    {
+      "parameters": {
+        "executeOnce": true,
+        "command": "=\"%ARGSTATS_INGEST_DIR%\\.venv\\Scripts\\python.exe\" \"%ARGSTATS_INGEST_DIR%\\scripts\\load_standings.py\" --league-id {{ $('Category Config').first().json.leagueId }} --season \"{{ $('Category Config').first().json.season }}\" --include-table-prefix \"{{ $('Category Config').first().json.includeTablePrefix }}\" --exclude-table-prefix \"{{ $('Category Config').first().json.excludeTablePrefix }}\""
+      },
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [
+        624,
+        -64
+      ],
+      "id": "7d2a9e41-3b6c-4f8d-a1e5-ilnemrk7wehn",
+      "name": "Load Standings",
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const raw = $('Fetch Season Fixtures').first().json.stdout;\n\nif (!raw) {\n  throw new Error('Python scraper returned empty stdout');\n}\n\nlet payload;\n\ntry {\n  payload = JSON.parse(raw);\n} catch (error) {\n  throw new Error(\n    `Could not parse scraper output as JSON: ${error.message}`\n  );\n}\n\nif (!Array.isArray(payload.matches)) {\n  throw new Error(\n    'Scraper output does not contain a matches array'\n  );\n}\n\nconst { tableFilter } = $('Category Config').first().json;\n\n// Se queda con los partidos de esta categoría según las tablas de sus equipos\nconst belongs = match => {\n  if (!tableFilter) return true;\n\n  const tables = match.tables || [];\n\n  if (tableFilter.include) {\n    return tables.some(table => table.startsWith(tableFilter.include));\n  }\n\n  return !tables.some(table => table.startsWith(tableFilter.exclude));\n};\n\nreturn payload.matches.filter(belongs).map(match => ({\n  json: {\n    source: payload.source,\n\n    leagueId: match.leagueId,\n    season: match.season,\n\n    matchId: match.matchId,\n    utcTime: match.utcTime,\n    finished: match.finished,\n    started: match.started,\n    cancelled: match.cancelled,\n\n    round: match.round,\n    pageUrl: match.pageUrl,\n\n    home: match.home,\n    away: match.away\n  }\n}));"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        832,
+        -64
+      ],
+      "id": "e759c893-cdce-43e9-b18f-0daf1cacf2df",
+      "name": "Parse Fixtures"
+    },
+    {
+      "parameters": {
+        "jsCode": "const items = $input.all();\n\nreturn items.filter(item => {\n  const match = item.json;\n\n  return (\n    match.finished === true &&\n    match.cancelled !== true\n  );\n});"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1040,
+        -64
+      ],
+      "id": "b4476830-885b-4359-81c0-8b454cf5c13b",
+      "name": "Only finished games"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Una sola consulta para todos los partidos terminados del fixture.\n-- Devuelve solo los que faltan o están incompletos: sincronizado =\n-- terminado (90', alargue o penales), con resultado y con detalle de\n-- jugadores cargado.\nSELECT f.id AS \"matchId\"\nFROM unnest(ARRAY[{{ $input.all().map(item => item.json.matchId).join(',') }}]::BIGINT[]) AS f(id)\nWHERE NOT EXISTS (\n    SELECT 1\n    FROM public.partidos p\n    WHERE p.partido_id = f.id\n      AND p.estado IN ('FT', 'AET', 'Pen')\n      AND p.goles_local IS NOT NULL\n      AND p.goles_visitante IS NOT NULL\n      AND (\n          EXISTS (SELECT 1 FROM public.alineaciones a WHERE a.partido_id = p.partido_id)\n          OR EXISTS (SELECT 1 FROM public.stats_jugador_partido s WHERE s.partido_id = p.partido_id)\n      )\n);",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.7,
+      "position": [
+        1248,
+        -64
+      ],
+      "id": "d781bd8f-d69a-40fc-b4ac-f04b1315326a",
+      "name": "Check Sync State",
+      "credentials": {
+        "postgres": {
+          "id": "c5W2RGeAogX8NOoB",
+          "name": "Postgres account"
+        }
+      },
+      "executeOnce": true
+    },
+    {
+      "parameters": {
+        "jsCode": "const { maxPerRun } = $('Category Config').first().json;\n\n// Datos del fixture para ordenar y contar por liga\nconst fixture = new Map(\n  $('Only finished games').all().map(item => [String(item.json.matchId), item.json])\n);\n\n// Primero los más recientes: así la actualización semanal no queda\n// detrás del backlog de partidos viejos\nconst pending = $input.all()\n  .map(item => fixture.get(String(item.json.matchId)))\n  .filter(Boolean)\n  .sort((a, b) => String(b.utcTime).localeCompare(String(a.utcTime)));\n\nconst selected = pending.slice(0, maxPerRun);\nconst ids = selected.map(match => String(match.matchId));\n\nreturn [{\n  json: {\n    pendingTotal: pending.length,\n    count: ids.length,\n    matchIds: ids,\n    matchIdsCsv: ids.join(',')\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1456,
+        -64
+      ],
+      "id": "6fd7f09e-f63f-448c-81d8-2b2f0605f958",
+      "name": "Collect Match IDs"
+    },
+    {
+      "parameters": {
+        "executeOnce": true,
+        "command": "=\"%ARGSTATS_INGEST_DIR%\\.venv\\Scripts\\python.exe\" \"%ARGSTATS_INGEST_DIR%\\scripts\\fotmob_sync.py\" download --match-ids \"{{ $json.matchIdsCsv }}\""
+      },
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [
+        1664,
+        -64
+      ],
+      "id": "3f6c2a51-8d4e-4b7a-9c1e-5a2b7d9e0f13",
+      "name": "Download Matches"
+    },
+    {
+      "parameters": {
+        "jsCode": "const raw = $json.stdout;\n\nif (!raw) {\n  throw new Error('fotmob_sync.py download returned empty stdout');\n}\n\nlet payload;\n\ntry {\n  payload = JSON.parse(raw);\n} catch (error) {\n  throw new Error(\n    `Could not parse download output as JSON: ${error.message}`\n  );\n}\n\n// Se cargan los recién bajados y los que ya estaban guardados\nconst toLoad = [...payload.downloaded, ...payload.cached];\n\nreturn [{\n  json: {\n    ...payload,\n    toLoad,\n    toLoadCsv: toLoad.join(',')\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1872,
+        -64
+      ],
+      "id": "5c2e8f14-7a3b-4d9e-b1f6-0e4a9c3d2b71",
+      "name": "Parse Download"
+    },
+    {
+      "parameters": {
+        "executeOnce": true,
+        "command": "=\"%ARGSTATS_INGEST_DIR%\\.venv\\Scripts\\python.exe\" \"%ARGSTATS_INGEST_DIR%\\scripts\\load_matches.py\" --match-ids \"{{ $json.toLoadCsv }}\""
+      },
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [
+        2080,
+        -64
+      ],
+      "id": "9a4f1b2c-6d8e-4f3a-a7c5-2b9e0d1f4c86",
+      "name": "Load Into DB"
+    },
+    {
+      "parameters": {
+        "jsCode": "const raw = $json.stdout;\n\nif (!raw) {\n  throw new Error('load_matches.py returned empty stdout');\n}\n\nlet load;\n\ntry {\n  load = JSON.parse(raw);\n} catch (error) {\n  throw new Error(\n    `Could not parse load output as JSON: ${error.message}`\n  );\n}\n\nconst collect = $('Collect Match IDs').first().json;\nconst config = $('Category Config').first().json;\n\n// Las posiciones no cortan el workflow si fallan: se informa acá\nlet standings;\ntry {\n  standings = JSON.parse($('Load Standings').first().json.stdout);\n} catch (error) {\n  standings = { error: $('Load Standings').first().json.stderr || 'no output' };\n}\nconst download = $('Parse Download').first().json;\n\nconst failed = [...download.failed, ...load.failed];\n\nreturn [{\n  json: {\n    category: config.category,\n    standingsRows: standings.rows ?? null,\n    standings,\n    pendingTotal: collect.pendingTotal,\n    requested: collect.count,\n    downloadedCount: download.downloaded.length,\n    cachedCount: download.cached.length,\n    syncedCount: load.synced.length,\n    replacedCount: (load.replaced || []).length,\n    replaced: load.replaced || [],\n    failedCount: failed.length,\n    failed,\n    synced: load.synced,\n    finishedAt: new Date().toISOString()\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2288,
+        -64
+      ],
+      "id": "8b1d4e7f-2c3a-4f5b-a6d8-9e0c1b2a3f47",
+      "name": "Sync Summary"
+    }
+  ],
+  "connections": {
+    "When clicking ‘Execute workflow’": {
+      "main": [
+        [
+          {
+            "node": "Category Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Schedule Trigger": {
+      "main": [
+        [
+          {
+            "node": "Category Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Category Config": {
+      "main": [
+        [
+          {
+            "node": "Fetch Season Fixtures",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Season Fixtures": {
+      "main": [
+        [
+          {
+            "node": "Load Standings",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load Standings": {
+      "main": [
+        [
+          {
+            "node": "Parse Fixtures",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Fixtures": {
+      "main": [
+        [
+          {
+            "node": "Only finished games",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Only finished games": {
+      "main": [
+        [
+          {
+            "node": "Check Sync State",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Sync State": {
+      "main": [
+        [
+          {
+            "node": "Collect Match IDs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Collect Match IDs": {
+      "main": [
+        [
+          {
+            "node": "Download Matches",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Download Matches": {
+      "main": [
+        [
+          {
+            "node": "Parse Download",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Download": {
+      "main": [
+        [
+          {
+            "node": "Load Into DB",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load Into DB": {
+      "main": [
+        [
+          {
+            "node": "Sync Summary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": true
+  }
+}

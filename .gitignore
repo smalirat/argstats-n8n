@@ -1,0 +1,32 @@
+# --- Nunca subir ---
+
+# Base de n8n: workflows guardados, usuario, credenciales encriptadas y
+# config con la clave que las encripta; también historial de ejecuciones
+data/
+
+# Secretos (connection string de Supabase)
+.env
+.env.*
+!.env.example
+
+# Runtime local: perfil de Chrome con cookies de sesión, JSON descargados
+# de FotMob y backups de datos de la base
+project/.runtime/
+
+# Entorno virtual de Python (se recrea con requirements.txt)
+project/.venv/
+
+# Restos de la instalación de n8n con npm
+app/
+npm-cache/
+
+# --- Generados ---
+__pycache__/
+*.py[cod]
+*.log
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
