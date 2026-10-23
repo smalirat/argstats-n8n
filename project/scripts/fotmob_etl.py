@@ -152,6 +152,20 @@ def tarjetas_por_jugador(eventos: list[dict]) -> dict[int, tuple[bool, bool]] | 
     return tarjetas
 
 
+# En algunas temporadas FotMob carga la competición como una sub-liga con un
+# nombre genérico (Copa Argentina 2024 y 2025 llegan como "Cup", con
+# parentLeagueId 9305): se usa el nombre de la liga madre.
+NOMBRES_GENERICOS = {"Cup"}
+NOMBRE_LIGA_MADRE = {9305: "Copa Argentina"}
+
+
+def nombre_liga(gen: dict[str, Any]) -> str:
+    nombre = gen.get("leagueName") or "Desconocido"
+    if nombre in NOMBRES_GENERICOS:
+        return NOMBRE_LIGA_MADRE.get(gen.get("parentLeagueId"), nombre)
+    return nombre
+
+
 # Eventos que se guardan cuando FotMob no les manda ID (los demás, como cambios
 # o fin del tiempo, nunca traían ID y no se guardan)
 TIPOS_EVENTO = {"Goal", "Card", "MissedPenalty"}
@@ -188,13 +202,15 @@ def normalizar_ronda(ronda) -> tuple[str | None, str, bool]:
     "Clausura - Round 13"      -> ("Clausura", "13", False)
     "Apertura - 8th Finals"    -> ("Apertura", "1/8", True)
     "Clausura - Semi-finals"   -> ("Clausura", "1/2", True)
-    Sin etapa adelante se deja como viene ("13", "1/4", "16th Finals" de la Copa).
+    Sin etapa adelante, las eliminatorias se pasan al mismo formato
+    ("16th Finals" de la Copa -> "1/16") y el resto se deja como viene ("13", "1st Round").
     """
     ronda = str(ronda) if ronda is not None else "N/A"
     match = re.fullmatch(r"\s*(.+?)\s+-\s+(.+?)\s*", ronda)
 
     if not match:
-        return None, ronda, False
+        # Sin etapa (copas): las rondas eliminatorias en el mismo formato ("16th Finals" -> "1/16")
+        return None, ronda_playoff(ronda) or ronda, False
 
     etapa, resto = match.group(1), match.group(2)
     numero = re.fullmatch(r"Round\s+(\d+)", resto)
@@ -268,7 +284,7 @@ def extraer_filas(data: dict[str, Any]) -> dict[str, Any] | None:
     partido_id = int(gen["matchId"])
     fecha = gen.get("matchTimeUTCDate")
     etapa, ronda, es_playoff = normalizar_ronda(gen.get("matchRound", "N/A"))
-    torneo = normalizar_torneo(gen.get("leagueName", "Desconocido"), etapa, es_playoff)
+    torneo = normalizar_torneo(nombre_liga(gen), etapa, es_playoff)
     edicion = (torneo, fecha[:4] if fecha else "Desc")
 
     local, visitante = head["teams"][0], head["teams"][1]
