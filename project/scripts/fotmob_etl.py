@@ -157,9 +157,13 @@ def tarjetas_por_jugador(eventos: list[dict]) -> dict[int, tuple[bool, bool]] | 
 # parentLeagueId 9305): se usa el nombre de la liga madre.
 NOMBRES_GENERICOS = {"Cup"}
 NOMBRE_LIGA_MADRE = {9305: "Copa Argentina"}
+# Ligas que FotMob nombra en inglés
+NOMBRE_POR_LIGA = {9381: "Supercopa Argentina"}  # llega como "Super Cup"
 
 
 def nombre_liga(gen: dict[str, Any]) -> str:
+    if gen.get("leagueId") in NOMBRE_POR_LIGA:
+        return NOMBRE_POR_LIGA[gen["leagueId"]]
     nombre = gen.get("leagueName") or "Desconocido"
     if nombre in NOMBRES_GENERICOS:
         return NOMBRE_LIGA_MADRE.get(gen.get("parentLeagueId"), nombre)
