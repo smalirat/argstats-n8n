@@ -243,6 +243,19 @@ def normalizar_torneo(nombre: str, etapa: str | None, es_playoff: bool = False) 
     return nombre
 
 
+def minutos_cambio(jugador: dict[str, Any]) -> tuple[int | None, int | None]:
+    """(minuto de entrada, minuto de salida) según performance.substitutionEvents de la alineación."""
+    entrada = salida = None
+
+    for ev in (jugador.get("performance") or {}).get("substitutionEvents") or []:
+        if ev.get("type") == "subIn" and entrada is None:
+            entrada = ev.get("time")
+        elif ev.get("type") == "subOut" and salida is None:
+            salida = ev.get("time")
+
+    return entrada, salida
+
+
 def extraer_lineup(lineups: dict[str, Any]) -> list[tuple[Any, dict, bool]]:
     """
     Devuelve (equipo_id, jugador, es_titular). FotMob tiene dos formatos:
@@ -367,6 +380,7 @@ def extraer_filas(data: dict[str, Any]) -> dict[str, Any] | None:
             continue
 
         posicion = p.get("role") or p.get("positionId")
+        entrada, salida = minutos_cambio(p)
         filas["jugadores"].append((j_id, extraer_nombre(p.get("name"))))
         filas["alineaciones"].append((
             partido_id,
@@ -375,6 +389,8 @@ def extraer_filas(data: dict[str, Any]) -> dict[str, Any] | None:
             es_titular,
             p.get("shirtNumber"),
             str(posicion) if posicion is not None else None,
+            entrada,
+            salida,
         ))
 
     sinteticos = 0
@@ -404,6 +420,7 @@ def extraer_filas(data: dict[str, Any]) -> dict[str, Any] | None:
             ev.get("type"),
             # En el formato nuevo el gol en contra viene aparte (ownGoal), no en goalDescription
             ev.get("card") or ev.get("goalDescription") or ("Own goal" if ev.get("ownGoal") in (True, "True", "true") else None),
+            int(ev["assistPlayerId"]) if ev.get("type") == "Goal" and ev.get("assistPlayerId") else None,
         ))
 
     for t in (content.get("shotmap") or {}).get("shots", []) or []:
@@ -576,12 +593,14 @@ def cargar_partidos(conn, payloads: list[dict[str, Any]]) -> dict[str, list[int]
             {", ".join(f"{c} = EXCLUDED.{c}" for c in columnas_stats)}
     """, sin_duplicados([s for f in todas for s in f["stats"]], clave=primeras_dos))
 
-    # Las tablas con DO NOTHING se quedan con la primera aparición, igual
-    # que si se insertaran una por una.
+    # Las tablas que se deduplican con ultimo_gana=False se quedan con la
+    # primera aparición, igual que si se insertaran una por una.
     insertar("""
-        INSERT INTO alineaciones (partido_id, equipo_id, jugador_id, es_titular, dorsal, posicion)
+        INSERT INTO alineaciones (partido_id, equipo_id, jugador_id, es_titular, dorsal, posicion, minuto_entrada, minuto_salida)
         VALUES %s
-        ON CONFLICT (partido_id, jugador_id) DO NOTHING
+        ON CONFLICT (partido_id, jugador_id) DO UPDATE SET
+            minuto_entrada = EXCLUDED.minuto_entrada,
+            minuto_salida = EXCLUDED.minuto_salida
     """, sin_duplicados(
         [a for f in todas for a in f["alineaciones"]],
         clave=lambda a: (a[0], a[2]),
@@ -596,9 +615,9 @@ def cargar_partidos(conn, payloads: list[dict[str, Any]]) -> dict[str, list[int]
     )
 
     insertar("""
-        INSERT INTO eventos (evento_id, partido_id, equipo_id, jugador_id, minuto, tipo_evento, detalle)
+        INSERT INTO eventos (evento_id, partido_id, equipo_id, jugador_id, minuto, tipo_evento, detalle, asistencia_jugador_id)
         VALUES %s
-        ON CONFLICT (evento_id) DO NOTHING
+        ON CONFLICT (evento_id) DO UPDATE SET asistencia_jugador_id = EXCLUDED.asistencia_jugador_id
     """, sin_duplicados([e for f in todas for e in f["eventos"]], ultimo_gana=False))
 
     # Los tiros se actualizan (no DO NOTHING) para completar la situación de los ya cargados
